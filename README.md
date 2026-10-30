@@ -5,7 +5,7 @@ A retro-style 2D platform game made with Python and Pygame.
 In Terminal, first go to the project folder, then start the game:
 
 ```bash
-cd /Users/zahar/phase-shift
+cd /phase-shift
 .venv/bin/python client/main.py
 ```
 

@@ -1,11 +1,20 @@
 """Phase Shift — a retro platform game: pixel art, menus, skins and a local leaderboard."""
 
 import json
-import sqlite3
 import sys
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+
+import requests
+
+# --------------------------------------------------------------------------- server API
+# The game no longer touches any database file: all results go through the API,
+# so there is exactly one database (the one in the api folder).
+SERVER_URL = "http://127.0.0.1:8000"
+SCORES_URL = f"{SERVER_URL}/api/scores"            # POST: save a result
+LEADERBOARD_URL = f"{SERVER_URL}/api/leaderboard"  # GET: top results
+LEADERBOARD_LIMIT = 10
+
 
 BASE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = BASE_DIR / "assets"
@@ -53,8 +62,6 @@ COIN = (255, 220, 74)
 PANEL = (26, 36, 54)
 ERROR = (255, 120, 120)
 MEDALS = [(255, 220, 74), (205, 212, 225), (214, 150, 96)]
-
-ASSETS_DIR = Path(__file__).resolve().with_name("assets")
 
 RAW_LEVELS = [
     {
@@ -353,9 +360,7 @@ class Game:
         self.message = ""
         self.message_timer = 0.0
         self.settings_path = Path(__file__).resolve().with_name("settings.json")
-        self.db_path = Path(__file__).resolve().with_name("leaderboard.db")
         self.load_settings()
-        self.init_db()
         self.leaderboard = self.fetch_leaderboard()
         self.load_level()
 
@@ -395,63 +400,37 @@ class Game:
         except OSError:
             pass
 
-    @contextmanager
-    def db(self):
-        """A connection that both commits and is always closed."""
-        conn = sqlite3.connect(self.db_path)
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
-
-    def init_db(self):
-        with self.db() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS leaderboard (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nickname TEXT NOT NULL,
-                    total_time REAL NOT NULL,
-                    coins INTEGER NOT NULL,
-                    skin TEXT NOT NULL,
-                    played_on TEXT NOT NULL,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-
     def fetch_leaderboard(self):
-        # A faster time ranks higher; on equal time, more coins rank higher.
-        with self.db() as conn:
-            rows = conn.execute(
-                "SELECT nickname, total_time, coins, skin, played_on FROM leaderboard "
-                "ORDER BY total_time ASC, coins DESC, id ASC LIMIT 10"
-            ).fetchall()
-        return [
-            {
-                "nickname": nickname,
-                "total_time": float(total_time),
-                "coins": int(coins),
-                "skin": skin,
-                "played_on": played_on,
-            }
-            for nickname, total_time, coins, skin, played_on in rows
-        ]
+        """Top results from the API. Returns [] if the server is unavailable."""
+        try:
+            response = requests.get(LEADERBOARD_URL, timeout=3)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            print("Failed to load leaderboard:", exc)
+            return []
 
-    def add_result(self, payload):
-        with self.db() as conn:
-            conn.execute(
-                "INSERT INTO leaderboard (nickname, total_time, coins, skin, played_on) VALUES (?, ?, ?, ?, ?)",
-                (
-                    payload["nickname"],
-                    float(payload["total_time"]),
-                    int(payload["coins"]),
-                    payload["skin"],
-                    payload["played_on"],
-                ),
-            )
-        self.leaderboard = self.fetch_leaderboard()
+        # accept both a plain list and {"items": [...]} / {"scores": [...]}
+        if isinstance(data, dict):
+            data = data.get("items") or data.get("scores") or data.get("results") or []
+
+        rows = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                rows.append(
+                    {
+                        "nickname": str(item.get("nickname", "?")),
+                        "total_time": float(item.get("total_time", 0)),
+                        "coins": int(item.get("coins", 0)),
+                        "skin": str(item.get("skin", "")),
+                        "played_on": str(item.get("played_on", "")),
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+        return rows[:LEADERBOARD_LIMIT]
 
     # ------------------------------------------------------------------ logic
 
@@ -545,19 +524,34 @@ class Game:
             self.message_timer = 1.2
             self.load_level()
 
+    
     def submit_result(self):
         if self.saved_result:
             return
-        self.saved_result = True
-        self.add_result(
-            {
-                "nickname": self.nickname,
-                "total_time": round(self.run_time, 2),
-                "coins": self.total_coins,
-                "skin": self.selected_skin_id,
-                "played_on": datetime.now().strftime("%Y-%m-%d"),
-            }
-        )
+
+        payload = {
+            "nickname": self.nickname,
+            "total_time": round(self.run_time, 2),
+            "coins": self.total_coins,
+            "skin": self.selected_skin_id,
+            "played_on": datetime.now().strftime("%Y-%m-%d"),
+        }
+
+        try:
+            response = requests.post(
+                SCORES_URL,
+                json=payload,
+                timeout=3
+            )
+            response.raise_for_status()
+
+            self.saved_result = True
+            self.leaderboard = self.fetch_leaderboard()
+            print("Result successfully saved!")
+
+        except requests.RequestException as error:
+            print("Failed to save result:", error)
+
 
     # ------------------------------------------------------------------ input
 

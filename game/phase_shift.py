@@ -1,61 +1,69 @@
-"""Phase Shift — a retro platform game: pixel art, menus, skins and a local leaderboard."""
+"""Phase Shift: retro stila platformers ar pikseļu grafiku, izvēlnēm, varoņu izskatiem un rezultātu tabulu (caur serveri)."""
 
+# Standarta Python bibliotēkas: darbs ar JSON, sistēmu, datumu un failu ceļiem
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
 
+# requests: HTTP pieprasījumi uz serveri (API)
 import requests
 
 # --------------------------------------------------------------------------- server API
-# The game no longer touches any database file: all results go through the API,
-# so there is exactly one database (the one in the api folder).
+# Spēle pati vairs neatver nekādu datubāzi: visi rezultāti iet caur serveri (API),
+# tāpēc datubāze ir tikai viena (tā, kas atrodas mapē 'api').
 SERVER_URL = "http://127.0.0.1:8000"
-SCORES_URL = f"{SERVER_URL}/api/scores"            # POST: save a result
-LEADERBOARD_URL = f"{SERVER_URL}/api/leaderboard"  # GET: top results
-LEADERBOARD_LIMIT = 10
+SCORES_URL = f"{SERVER_URL}/api/scores"            # POST: saglabāt rezultātu
+LEADERBOARD_URL = f"{SERVER_URL}/api/leaderboard"  # GET: labākie rezultāti
+LEADERBOARD_LIMIT = 10  # cik rezultātu rādīt tabulā
 
 
+# Šī faila mape un attēlu mape (assets)
 BASE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = BASE_DIR / "assets"
 
 
+# Projekta saknes mape. Tā tiek pievienota sys.path, lai varētu importēt moduļus no mapes 'game'.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# pygame: grafika, taustiņu un peles ievade, laiks
 import pygame
 
+# ensure_assets izveido attēlus, kuru trūkst mapē assets
 from game.asset_builder import ensure_assets
+# validate_nickname pārbauda, vai segvārds ir derīgs
 from game.logic import validate_nickname
 
 
-# --------------------------------------------------------------------------- constants
+# --------------------------------------------------------------------------- konstantes
 
-# The game field is 1280x720. The window is resizable: the image is scaled with black bars.
+# Spēles lauks ir 1280x720. Logs ir maināms: attēls tiek pielāgots, atstājot melnas malas.
 W, H = 1280, 720
-FPS = 60
+FPS = 60                  # kadri sekundē
 
-# Levels are authored in 960x600 coordinates; they are stretched to W x H on load.
+# Līmeņi ir uzzīmēti 960x600 koordinātās; ielādējot tie tiek izstiepti līdz W x H.
 BASE_W, BASE_H = 960, 600
 LEVEL_SX, LEVEL_SY = W / BASE_W, H / BASE_H
 
-PLAYER_SIZE = 32          # 16 px art * SPRITE_SCALE
-SPRITE_SCALE = 2
-TILE_SCALE = 2            # 16 px tile -> 32 px
-UI_SCALE = 3              # 12 px UI frames -> 36 px (12 px border)
-COIN_DRAW = 16            # 8 px coin art * 2
-COIN_HITBOX = 22
-PLAYER_SPEED = 5
-GRAVITY = 0.62
-MAX_FALL_SPEED = 14
-LEVEL_TIME = 90
-MAX_JUMP_CHARGE = 0.65
-HUD_HEIGHT = 64
-TEMP_W, TEMP_H = 112, 16
-TEMP_LIFETIME = 2.8
-MAX_TEMP_PLATFORMS = 2
+PLAYER_SIZE = 32          # spēlētāja izmērs pikseļos (16 px attēls * SPRITE_SCALE)
+SPRITE_SCALE = 2          # cik reizes palielina varoņa attēlu
+TILE_SCALE = 2            # platformas flīzes palielinājums (16 px -> 32 px)
+UI_SCALE = 3              # saskarnes rāmju palielinājums (12 px -> 36 px)
+COIN_DRAW = 16            # monētas zīmēšanas izmērs (8 px attēls * 2)
+COIN_HITBOX = 22          # monētas sadursmes laukums
+PLAYER_SPEED = 5          # horizontālais ātrums (pikseļi kadrā)
+GRAVITY = 0.62             # gravitācija: par cik pieaug krišanas ātrums katrā kadrā
+MAX_FALL_SPEED = 14       # maksimālais krišanas ātrums
+LEVEL_TIME = 90            # laiks vienam līmenim (sekundes)
+MAX_JUMP_CHARGE = 0.65    # cik ilgi (sekundes) var uzlādēt lēcienu
+HUD_HEIGHT = 64            # augšējās informācijas joslas augstums
+TEMP_W, TEMP_H = 112, 16  # pagaidu platformas platums un augstums
+TEMP_LIFETIME = 2.8        # cik sekundes pagaidu platforma pastāv
+MAX_TEMP_PLATFORMS = 2    # cik pagaidu platformu var būt vienlaikus
 
+# Krāsas (RGB): teksts, akcents, monētas, panelis, kļūdas un medaļu krāsas (1.-3. vieta)
 TEXT = (239, 244, 255)
 ACCENT = (130, 205, 255)
 COIN = (255, 220, 74)
@@ -63,6 +71,10 @@ PANEL = (26, 36, 54)
 ERROR = (255, 120, 120)
 MEDALS = [(255, 220, 74), (205, 212, 225), (214, 150, 96)]
 
+# Līmeņu dati. Katram līmenim:
+# name = nosaukums, spawn = spēlētāja starta vieta,
+# platforms = platformas (x, y, platums, augstums), coins = monētas (x, y),
+# pads = atsperes, kas uzsviež spēlētāju, goal = finišs.
 RAW_LEVELS = [
     {
         "name": "Level 1 - First Steps",
@@ -98,7 +110,8 @@ RAW_LEVELS = [
     },
 ]
 
-# Sprite sheet frames: 0-1 idle, 2-5 run, 6 jump, 7 fall (16x16 each, a single row).
+# Varoņa attēla (sprite sheet) kadri: 0-1 stāv, 2-5 skrien, 6 lec, 7 krīt (katrs 16x16, viena rinda).
+# Animācijas: kuri kadri tiek rādīti un cik ilgi (frame_time sekundēs) katrs kadrs
 ANIMATIONS = {
     "idle": {"frames": [0, 1], "frame_time": 0.45},
     "run": {"frames": [2, 3, 4, 5], "frame_time": 0.09},
@@ -106,6 +119,7 @@ ANIMATIONS = {
     "fall": {"frames": [7], "frame_time": 1.0},
 }
 
+# Varoņu izskati (skini): ID (to saglabā datubāzē), nosaukums, attēla fails un animācijas
 SKINS = [
     {"id": "sun", "name": "Sun Runner", "sheet": "characters/sun.png", "frame_size": (16, 16), "animations": ANIMATIONS},
     {"id": "violet", "name": "Violet Dash", "sheet": "characters/violet.png", "frame_size": (16, 16), "animations": ANIMATIONS},
@@ -113,6 +127,7 @@ SKINS = [
 ]
 
 
+# Palīgfunkcijas: pārrēķina koordinātas no 960x600 uz 1280x720
 def _sx(value):
     return int(round(value * LEVEL_SX))
 
@@ -125,6 +140,7 @@ def _scale_rect(x, y, w, h):
     return pygame.Rect(_sx(x), _sy(y), _sx(w), _sy(h))
 
 
+# Pārvērš līmeņu datus par pygame.Rect objektiem ar pārrēķinātām koordinātām
 def build_levels():
     levels = []
     for item in RAW_LEVELS:
@@ -141,50 +157,58 @@ def build_levels():
     return levels
 
 
+# Gatavie līmeņi, ar kuriem strādā spēle
 LEVELS = build_levels()
 
 
-# --------------------------------------------------------------------------- assets
+# --------------------------------------------------------------------------- attēli
 
 class Assets:
-    """Loads PNGs from game/assets/ (missing ones are created by asset_builder) and caches scaled copies."""
+    """Ielādē PNG attēlus no game/assets/ (trūkstošos izveido asset_builder) un saglabā palielinātās kopijas kešatmiņā."""
 
     def __init__(self):
+        # Ja kāda attēla trūkst, asset_builder to izveido
         ensure_assets(ASSETS_DIR)
+        # Kešatmiņas, lai attēlus nevajadzētu pārrēķināt katrā kadrā
         self._skin_cache = {}
         self._platform_cache = {}
         self._nine_cache = {}
         self._sized_cache = {}
 
+        # Fona attēls, pielāgots spēles lauka izmēram
         self.background = pygame.transform.scale(self.load("environment/bg.png"), (W, H)).convert()
         self.tile_top = self.scaled("environment/tile_top.png", TILE_SCALE)
         self.tile_fill = self.scaled("environment/tile_fill.png", TILE_SCALE)
 
+        # Monētas animācija: kadri tiek izgriezti no viena attēla
         coin_sheet = self.load("environment/coin.png")
         size = coin_sheet.get_height()
         self.coin_frames = [
             pygame.transform.scale(coin_sheet.subsurface((i * size, 0, size, size)), (COIN_DRAW, COIN_DRAW))
             for i in range(coin_sheet.get_width() // size)
         ]
+        # Saskarnes attēli: pogas, panelis un ievades lauks
         self.ui = {name: self.scaled(f"ui/{name}.png", UI_SCALE) for name in ("button", "button_active", "panel", "input")}
 
+    # Ielādē attēlu no mapes assets
     @staticmethod
     def load(name):
         return pygame.image.load(str(ASSETS_DIR / name)).convert_alpha()
 
+    # Ielādē attēlu un palielina to norādīto reižu skaitu
     def scaled(self, name, factor):
         image = self.load(name)
         return pygame.transform.scale(image, (image.get_width() * factor, image.get_height() * factor))
 
     def sized(self, name, size):
-        """Image stretched (nearest-neighbor) to the given size: spring pads, finish flag."""
+        """Attēls, izstiepts līdz norādītajam izmēram (atsperes, finiša karogs)."""
         key = (name, size)
         if key not in self._sized_cache:
             self._sized_cache[key] = pygame.transform.scale(self.load(name), size)
         return self._sized_cache[key]
 
     def skin_frames(self, skin, scale=SPRITE_SCALE):
-        """List of skin frames as [(facing right, facing left), ...] at the requested scale."""
+        """Varoņa kadru saraksts [(uz labo pusi, uz kreiso pusi), ...] vajadzīgajā izmērā."""
         key = (skin["id"], scale)
         if key not in self._skin_cache:
             sheet = self.load(skin["sheet"])
@@ -198,7 +222,7 @@ class Assets:
         return self._skin_cache[key]
 
     def platform(self, width, height, tinted=False):
-        """Platform of the given size built from tiles (the top row uses the edge tile)."""
+        """Platforma no flīzēm (augšējā rinda izmanto malas flīzi); tinted = pagaidu platformas krāsa."""
         key = (width, height, tinted)
         if key not in self._platform_cache:
             surface = pygame.Surface((width, height), pygame.SRCALPHA)
@@ -214,7 +238,7 @@ class Assets:
         return self._platform_cache[key]
 
     def nine_slice(self, name, size):
-        """Stretches a UI frame to the given size without distorting the corners."""
+        """Izstiepj saskarnes rāmi līdz vajadzīgajam izmēram, nedeformējot stūrus (9-slice)."""
         key = (name, size)
         if key not in self._nine_cache:
             image = self.ui[name]
@@ -238,13 +262,15 @@ class Assets:
         return self._nine_cache[key]
 
 
-# --------------------------------------------------------------------------- player
+# --------------------------------------------------------------------------- spēlētājs
 
+# Spēlētāja klase: pozīcija, kustība, lēciens un animācija
 class Player:
     def __init__(self, pos, skin, assets):
         self.skin = skin
         self.rect = pygame.Rect(*pos, PLAYER_SIZE, PLAYER_SIZE)
         self.velocity = pygame.Vector2()
+        # Vertikālā kustība un sadursmes: no augšas spēlētājs nostājas uz platformas, no apakšas atsitas pret to
         self.on_ground = False
         self.jump_charge = 0.0
         self.facing = 1
@@ -254,11 +280,13 @@ class Player:
         self.anim_timer = 0.0
 
     def update(self, keys, platforms, dt):
+        # direction: -1 = pa kreisi, 0 = stāv, 1 = pa labi
         direction = int(keys[pygame.K_RIGHT] or keys[pygame.K_d]) - int(keys[pygame.K_LEFT] or keys[pygame.K_a])
         self.velocity.x = direction * PLAYER_SPEED
         if direction:
             self.facing = direction
 
+        # Horizontālā kustība un sadursmes ar platformām
         self.rect.x += round(self.velocity.x)
         for block in platforms:
             if self.rect.colliderect(block):
@@ -266,10 +294,11 @@ class Player:
                     self.rect.right = block.left
                 elif self.velocity.x < 0:
                     self.rect.left = block.right
-        # keep the player inside the field
+        # Neļauj spēlētājam iziet ārpus spēles lauka
         self.rect.left = max(0, self.rect.left)
         self.rect.right = min(W, self.rect.right)
 
+        # Gravitācija: ātrums uz leju pieaug, bet ne vairāk par maksimumu
         self.velocity.y = min(self.velocity.y + GRAVITY, MAX_FALL_SPEED)
         self.rect.y += round(self.velocity.y)
         self.on_ground = False
@@ -282,7 +311,7 @@ class Player:
                     self.rect.top = block.bottom
                 self.velocity.y = 0
 
-        # Jump charge accumulates in real time, not per frame.
+        # Lēciena uzlāde krājas reālajā laikā (sekundēs), nevis pa kadriem.
         if self.jump_charge:
             if self.on_ground:
                 self.jump_charge = min(self.jump_charge + dt, MAX_JUMP_CHARGE)
@@ -291,6 +320,7 @@ class Player:
 
         self.update_animation(direction, dt)
 
+    # Izvēlas animāciju: lēciens vai krišana gaisā, skriešana vai stāvēšana
     def update_animation(self, direction, dt):
         if not self.on_ground:
             name = "jump" if self.velocity.y < 0 else "fall"
@@ -308,6 +338,7 @@ class Player:
             self.anim_timer -= spec["frame_time"]
             self.frame_index = (self.frame_index + 1) % len(spec["frames"])
 
+    # Atlaižot Space, lēciena spēks atkarīgs no uzlādes ilguma
     def release_jump(self):
         if self.jump_charge and self.on_ground:
             power = 9 + min(self.jump_charge, MAX_JUMP_CHARGE) * 9
@@ -320,18 +351,20 @@ class Player:
         index = spec["frames"][self.frame_index % len(spec["frames"])]
         right, left = self.frames[index]
         image = left if self.facing < 0 else right
-        if self.jump_charge:  # crouch while charging a jump
+        if self.jump_charge:  # uzlādējot lēcienu, varonis pietupjas
             squash = int(8 * min(1.0, self.jump_charge / MAX_JUMP_CHARGE))
             image = pygame.transform.scale(image, (image.get_width(), image.get_height() - squash))
         surface.blit(image, (self.rect.x, self.rect.bottom - image.get_height()))
 
 
-# --------------------------------------------------------------------------- game
+# --------------------------------------------------------------------------- spēle
 
+# Galvenā spēles klase: stāvokļi, ievade, zīmēšana un sazināšanās ar serveri
 class Game:
     def __init__(self):
         pygame.init()
         pygame.display.set_caption("Phase Shift")
+        # Logs ir maināms; spēle tiek zīmēta uz 1280x720 'audekla' (canvas) un pēc tam pielāgota logam
         self.window = pygame.display.set_mode((W, H), pygame.RESIZABLE)
         self.canvas = pygame.Surface((W, H))
         self.view_scale = 1.0
@@ -342,37 +375,46 @@ class Game:
         self.font = pygame.font.Font(None, 34)
         self.small_font = pygame.font.Font(None, 24)
         self.big_font = pygame.font.Font(None, 84)
+        # Izvēlnes pogas
         self.menu_items = ["Start", "Leaderboard", "Choose Skin", "Quit"]
         self.menu_index = 0
         self.selected_skin_id = SKINS[0]["id"]
         self.selected_skin_index = 0
+        # Segvārds pēc noklusējuma (spēlētājs to var nomainīt pirms spēles)
         self.nickname = "Player"
         self.name_buffer = self.nickname
         self.name_entry_active = False
         self.name_error = ""
+        # Spēles stāvoklis: MENU, CHARACTER_SELECT, LEADERBOARD, PLAYING vai RESULT
         self.state = "MENU"
         self.level_index = 0
         self.run_time = 0.0
-        self.banked_coins = 0  # coins from completed levels
-        self.level_coins = 0   # coins from the current level attempt
+        self.banked_coins = 0  # monētas no pabeigtajiem līmeņiem
+        self.level_coins = 0   # monētas no pašreizējā līmeņa mēģinājuma
         self.completed = False
+        # Lai rezultātu nosūtītu serverim tikai vienu reizi
         self.saved_result = False
         self.message = ""
         self.message_timer = 0.0
+        # Fails, kurā tiek glabāts segvārds un izvēlētais skins
         self.settings_path = Path(__file__).resolve().with_name("settings.json")
         self.load_settings()
+        # Rezultātu tabula tiek ielādēta no servera
         self.leaderboard = self.fetch_leaderboard()
         self.load_level()
 
-    # ------------------------------------------------------------------ data
+    # ------------------------------------------------------------------ dati
 
+    # Kopējais monētu skaits: pabeigto līmeņu monētas + pašreizējā līmeņa monētas
     @property
     def total_coins(self):
         return self.banked_coins + self.level_coins
 
+    # Atgriež izvēlēto skinu (ja tāda nav, pirmo no saraksta)
     def current_skin(self):
         return next((skin for skin in SKINS if skin["id"] == self.selected_skin_id), SKINS[0])
 
+    # Nolasa saglabāto segvārdu un skinu no settings.json (ja fails bojāts, izmanto noklusējumu)
     def load_settings(self):
         payload = {}
         if self.settings_path.exists():
@@ -393,6 +435,7 @@ class Game:
         self.selected_skin_id = SKINS[self.selected_skin_index]["id"]
         self.name_buffer = self.nickname
 
+    # Saglabā segvārdu un skinu failā settings.json
     def save_settings(self):
         payload = {"selected_skin": self.selected_skin_id, "nickname": self.nickname}
         try:
@@ -400,9 +443,11 @@ class Game:
         except OSError:
             pass
 
+    # Pieprasa rezultātu tabulu no servera (GET /api/leaderboard)
     def fetch_leaderboard(self):
-        """Top results from the API. Returns [] if the server is unavailable."""
+        """Labākie rezultāti no servera (API). Ja serveris nav pieejams, atgriež tukšu sarakstu."""
         try:
+            # GET pieprasījums serverim; ja serveris neatbild 3 sekundēs, tiek izmests kļūdas ziņojums
             response = requests.get(LEADERBOARD_URL, timeout=3)
             response.raise_for_status()
             data = response.json()
@@ -410,10 +455,11 @@ class Game:
             print("Failed to load leaderboard:", exc)
             return []
 
-        # accept both a plain list and {"items": [...]} / {"scores": [...]}
+        # Pieņem gan parastu sarakstu, gan atbildi formātā {"results": [...]}
         if isinstance(data, dict):
             data = data.get("items") or data.get("scores") or data.get("results") or []
 
+        # Pārbauda katru ierakstu un pārvērš vērtības vajadzīgajos tipos
         rows = []
         for item in data:
             if not isinstance(item, dict):
@@ -432,8 +478,9 @@ class Game:
                 continue
         return rows[:LEADERBOARD_LIMIT]
 
-    # ------------------------------------------------------------------ logic
+    # ------------------------------------------------------------------ loģika
 
+    # Ielādē pašreizējo līmeni: izveido spēlētāju, platformas, monētas, atsperes un finišu
     def load_level(self):
         data = LEVELS[self.level_index]
         self.player = Player(data["spawn"], self.current_skin(), self.assets)
@@ -443,8 +490,9 @@ class Game:
         self.goal = data["goal"].copy()
         self.temp_platforms = []
         self.level_elapsed = 0.0
-        self.level_coins = 0  # when a level restarts the coins respawn, so the count is reset too
+        self.level_coins = 0  # kad līmenis sākas no jauna, monētas parādās atkal, tāpēc skaitītājs tiek nonullēts
 
+    # Sāk jaunu spēli no 1. līmeņa ar nullētiem laiku un monētām
     def reset_run(self):
         self.level_index = 0
         self.banked_coins = 0
@@ -456,6 +504,7 @@ class Game:
         self.message_timer = 0.0
         self.load_level()
 
+    # Pārbauda segvārdu un sāk spēli; ja segvārds nederīgs, parāda kļūdu
     def start_run(self):
         candidate = self.name_buffer.strip()
         if not validate_nickname(candidate):
@@ -469,20 +518,25 @@ class Game:
         self.name_error = ""
         self.name_buffer = self.nickname
 
+    # Atver segvārda ievades logu
     def begin_name_entry(self):
         self.name_buffer = self.nickname
         self.name_entry_active = True
         self.name_error = ""
 
+    # Uzbūvē pagaidu platformu (taustiņš E); vienlaikus ne vairāk par MAX_TEMP_PLATFORMS
     def create_platform(self):
         if len(self.temp_platforms) >= MAX_TEMP_PLATFORMS:
             return
+        # Platforma parādās spēlētāja priekšā, nedaudz zemāk
         x = self.player.rect.centerx + self.player.facing * 64 - TEMP_W // 2
         y = self.player.rect.bottom + 24
         rect = pygame.Rect(max(0, min(W - TEMP_W, x)), min(H - 40, y), TEMP_W, TEMP_H)
+        # Neliek platformu uz vietas, kur jau ir cita platforma
         if not any(rect.colliderect(block) for block in self.platforms):
             self.temp_platforms.append([rect, TEMP_LIFETIME])
 
+    # Spēles loģikas atjaunošana vienā kadrā (izsauc 60 reizes sekundē); dt = laiks kopš iepriekšējā kadra
     def update(self, dt):
         if self.state != "PLAYING":
             return
@@ -491,16 +545,20 @@ class Game:
         self.message_timer = max(0, self.message_timer - dt)
 
         keys = pygame.key.get_pressed()
+        # Visi šķēršļi: parastās un pagaidu platformas
         blocks = self.platforms + [item[0] for item in self.temp_platforms]
         self.player.update(keys, blocks, dt)
 
+        # Atsperes: pieskaroties tām, spēlētājs tiek uzsviests uz augšu
         for pad in self.pads:
             if self.player.rect.colliderect(pad) and self.player.velocity.y >= 0:
                 self.player.rect.bottom = pad.top
                 self.player.velocity.y = -15
 
+        # Pagaidu platformu atlikušais laiks samazinās; kad tas beidzas, platforma pazūd
         self.temp_platforms = [[rect, left - dt] for rect, left in self.temp_platforms if left - dt > 0]
 
+        # Monētu vākšana: savāktās monētas tiek izņemtas no saraksta
         remaining_coins = []
         for coin in self.coins:
             if self.player.rect.colliderect(coin):
@@ -509,6 +567,7 @@ class Game:
                 remaining_coins.append(coin)
         self.coins = remaining_coins
 
+        # Finišs: pēdējā līmenī rezultāts tiek nosūtīts serverim, citos sākas nākamais līmenis
         if self.player.rect.colliderect(self.goal):
             self.banked_coins += self.level_coins
             self.level_coins = 0
@@ -519,16 +578,19 @@ class Game:
             else:
                 self.level_index += 1
                 self.load_level()
+        # Spēlētājs nokrita vai beidzās laiks: līmenis sākas no jauna
         elif self.player.rect.top > H or self.level_elapsed > LEVEL_TIME:
             self.message = "Try again!"
             self.message_timer = 1.2
             self.load_level()
 
     
+    # Nosūta rezultātu serverim (POST /api/scores)
     def submit_result(self):
         if self.saved_result:
             return
 
+        # Dati, kas tiks saglabāti datubāzē
         payload = {
             "nickname": self.nickname,
             "total_time": round(self.run_time, 2),
@@ -538,32 +600,39 @@ class Game:
         }
 
         try:
+            # Nosūta datus JSON formātā uz serveri
             response = requests.post(
                 SCORES_URL,
                 json=payload,
                 timeout=3
             )
+            # Ja serveris atbild ar kļūdu, tiek izmests izņēmums
             response.raise_for_status()
 
+            # Rezultāts saglabāts; atjauno tabulu, lai tajā būtu redzams jaunais ieraksts
             self.saved_result = True
             self.leaderboard = self.fetch_leaderboard()
             print("Result successfully saved!")
 
+        # Ja serveris nav pieejams, spēle turpina darboties un tikai izdrukā kļūdu
         except requests.RequestException as error:
             print("Failed to save result:", error)
 
 
-    # ------------------------------------------------------------------ input
+    # ------------------------------------------------------------------ ievade
 
+    # Aizver spēli
     def quit_game(self):
         pygame.quit()
         sys.exit()
 
+    # Atgriežas galvenajā izvēlnē
     def go_to_menu(self):
         self.state = "MENU"
         self.name_entry_active = False
         self.name_buffer = self.nickname
 
+    # Izpilda izvēlēto izvēlnes pogu (Start, Leaderboard, Choose Skin vai Quit)
     def activate_menu_item(self):
         action = self.menu_items[self.menu_index]
         if action == "Start":
@@ -579,12 +648,14 @@ class Game:
         elif action == "Quit":
             self.quit_game()
 
+    # Izvēlas skinu un saglabā to settings.json
     def equip_skin(self, index):
         self.selected_skin_index = index
         self.selected_skin_id = SKINS[index]["id"]
         self.save_settings()
         self.state = "MENU"
 
+    # Taustiņa nospiešana: darbība atkarīga no pašreizējā stāvokļa (state)
     def handle_keydown(self, key, text=""):
         if self.state == "MENU":
             if self.name_entry_active:
@@ -628,6 +699,7 @@ class Game:
                 self.menu_index = 0
                 self.go_to_menu()
 
+    # Segvārda ievade: atļauti tikai latīņu burti, cipari un pasvītra, līdz 16 rakstzīmēm
     def handle_name_entry(self, key, text):
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             self.start_run()
@@ -637,17 +709,19 @@ class Game:
         elif key == pygame.K_BACKSPACE:
             self.name_buffer = self.name_buffer[:-1]
         elif text and len(self.name_buffer) < 16:
-            # event.unicode gives the correct case (uppercase letters, etc.)
+            # event.unicode dod pareizo burtu reģistru (lielie/mazie burti)
             character = "_" if text == " " else text
             if character.isascii() and (character.isalnum() or character == "_"):
                 self.name_buffer += character
 
+    # Taustiņa atlaišana: atlaižot Space, spēlētājs izdara lēcienu
     def handle_keyup(self, key):
         if self.state == "PLAYING" and key == pygame.K_SPACE:
             self.player.release_jump()
 
-    # ------------------------------------------------------------------ mouse
+    # ------------------------------------------------------------------ pele
 
+    # Pogu un paneļu novietojums (izmanto gan zīmēšanai, gan peles klikšķiem)
     def menu_button_rect(self, index):
         return pygame.Rect(W // 2 - 150, 230 + index * 80, 300, 56)
 
@@ -658,12 +732,13 @@ class Game:
         return pygame.Rect(W // 2 - 230, 170 + index * 140, 460, 110)
 
     def to_canvas(self, pos):
-        """Window mouse coordinates -> game field coordinates."""
+        """Peles koordinātas logā -> koordinātas spēles laukā."""
         return (
             (pos[0] - self.view_offset[0]) / self.view_scale,
             (pos[1] - self.view_offset[1]) / self.view_scale,
         )
 
+    # Peles kustība: izceļ pogu vai kartīti, virs kuras atrodas kursors
     def handle_mouse_motion(self, pos):
         point = self.to_canvas(pos)
         if self.state == "MENU" and not self.name_entry_active:
@@ -675,11 +750,12 @@ class Game:
                 if self.skin_card_rect(index).collidepoint(point):
                     self.selected_skin_index = index
 
+    # Peles klikšķis: darbība atkarīga no pašreizējā stāvokļa
     def handle_mouse_click(self, pos):
         point = self.to_canvas(pos)
         if self.state == "MENU":
             if self.name_entry_active:
-                # a click inside the nickname panel does nothing; a click outside closes it
+                # klikšķis segvārda panelī neko nedara; klikšķis ārpus tā to aizver
                 if self.name_panel_rect().collidepoint(point):
                     return
                 self.name_entry_active = False
@@ -699,22 +775,26 @@ class Game:
         elif self.state == "RESULT":
             self.go_to_menu()
 
-    # ------------------------------------------------------------------ drawing
+    # ------------------------------------------------------------------ zīmēšana
 
+    # Uzraksta tekstu uz 'audekla'; atgriež teksta platumu
     def draw_text(self, text, position, font=None, color=TEXT, anchor="topleft"):
         image = (font or self.font).render(text, True, color)
         self.canvas.blit(image, image.get_rect(**{anchor: position}))
         return image.get_width()
 
+    # Uzzīmē rāmi (pogu, paneli vai ievades lauku) vajadzīgajā izmērā
     def draw_box(self, name, rect):
         self.canvas.blit(self.assets.nine_slice(name, rect.size), rect.topleft)
 
+    # Varoņa kadrs priekšskatījumam izvēlnē (skriešanas vai stāvēšanas animācija)
     def preview_frame(self, skin, running):
         frames = self.assets.skin_frames(skin, 4)
         spec = skin["animations"]["run" if running else "idle"]
         step = int(self.anim_time / spec["frame_time"]) % len(spec["frames"])
         return frames[spec["frames"][step]][0]
 
+    # Zīmē galveno izvēlni un (ja vajag) segvārda ievades logu
     def draw_menu(self):
         self.canvas.blit(self.assets.background, (0, 0))
         self.draw_text("PHASE SHIFT", (W // 2, 130), font=self.big_font, anchor="center")
@@ -737,12 +817,13 @@ class Game:
             input_box = pygame.Rect(panel.x + 24, panel.y + 48, panel.width - 48, 44)
             self.draw_box("input", input_box)
             width = self.draw_text(self.name_buffer, (input_box.x + 16, input_box.centery), anchor="midleft")
-            if int(self.anim_time * 2) % 2 == 0:  # blinking caret
+            if int(self.anim_time * 2) % 2 == 0:  # mirgojošs kursors
                 caret_x = input_box.x + 16 + width + 3
                 pygame.draw.rect(self.canvas, ACCENT, (caret_x, input_box.centery - 12, 3, 24))
             if self.name_error:
                 self.draw_text(self.name_error, (panel.x + 24, panel.y + 104), font=self.small_font, color=ERROR)
 
+    # Zīmē skinu izvēles ekrānu
     def draw_character_select(self):
         self.canvas.blit(self.assets.background, (0, 0))
         self.draw_text("Choose your skin", (W // 2, 90), font=self.big_font, anchor="center")
@@ -760,12 +841,14 @@ class Game:
                 self.draw_text("EQUIPPED", (card.x + 120, card.y + 66), font=self.small_font, color=label_color)
         self.draw_text("Up/Down or mouse - choose, Enter or click - equip, Esc - back", (W // 2, H - 30), font=self.small_font, color=ACCENT, anchor="center")
 
+    # Zīmē rezultātu tabulu (dati nāk no servera)
     def draw_leaderboard(self):
         self.canvas.blit(self.assets.background, (0, 0))
         self.draw_text("Leaderboard", (W // 2, 70), font=self.big_font, anchor="center")
         panel = pygame.Rect(160, 130, W - 320, H - 200)
         self.draw_box("panel", panel)
 
+        # Kolonnu nosaukumi un to x pozīcijas ekrānā
         columns = (("#", 200), ("Name", 260), ("Time", 600), ("Coins", 780), ("Skin", 930))
         for label, x in columns:
             self.draw_text(label, (x, 160), color=ACCENT)
@@ -782,12 +865,13 @@ class Game:
 
         self.draw_text("Press Esc, Enter or click to return", (W // 2, H - 30), font=self.small_font, color=ACCENT, anchor="center")
 
+    # Zīmē spēles ekrānu: platformas, monētas, finišu, spēlētāju un augšējo joslu (HUD)
     def draw_gameplay(self):
         self.canvas.blit(self.assets.background, (0, 0))
         for block in self.platforms:
             self.canvas.blit(self.assets.platform(block.width, block.height), block.topleft)
         for block, left in self.temp_platforms:
-            if left < 0.9 and int(left * 10) % 2 == 0:  # blinks before disappearing
+            if left < 0.9 and int(left * 10) % 2 == 0:  # pirms pazušanas platforma mirgo
                 continue
             self.canvas.blit(self.assets.platform(block.width, block.height, tinted=True), block.topleft)
         for pad in self.pads:
@@ -798,6 +882,7 @@ class Game:
         self.canvas.blit(self.assets.sized("environment/goal.png", self.goal.size), self.goal.topleft)
         self.player.draw(self.canvas)
 
+        # Augšējā josla (HUD): līmeņa nosaukums, kopējais laiks, monētas un atlikušais laiks
         pygame.draw.rect(self.canvas, PANEL, pygame.Rect(0, 0, W, HUD_HEIGHT))
         pygame.draw.line(self.canvas, ACCENT, (0, HUD_HEIGHT), (W, HUD_HEIGHT), 2)
         mid = HUD_HEIGHT // 2
@@ -808,6 +893,7 @@ class Game:
         self.draw_text(f"x {self.total_coins}", (846, mid), anchor="midleft", color=COIN)
         self.draw_text(f"Time left: {remaining:02d}s", (W - 20, mid), anchor="midright")
 
+        # Lēciena uzlādes josla
         if self.player.jump_charge:
             fraction = min(1.0, self.player.jump_charge / MAX_JUMP_CHARGE)
             pygame.draw.rect(self.canvas, (10, 15, 25), (20, HUD_HEIGHT + 14, 200, 12), border_radius=4)
@@ -816,6 +902,7 @@ class Game:
         if self.message_timer:
             self.draw_text(self.message, (W // 2, H - 36), color=(255, 185, 184), anchor="center")
 
+    # Zīmē rezultāta ekrānu pēc 4. līmeņa pabeigšanas
     def draw_result(self):
         self.canvas.blit(self.assets.background, (0, 0))
         panel = pygame.Rect(W // 2 - 340, 110, 680, 500)
@@ -829,6 +916,7 @@ class Game:
         self.canvas.blit(preview, preview.get_rect(midright=(panel.right - 70, 360)))
         self.draw_text("Press Enter or click to return to the menu", (panel.centerx, 560), color=ACCENT, anchor="center")
 
+    # Izvēlas, ko zīmēt, atkarībā no stāvokļa (state)
     def draw(self):
         if self.state == "MENU":
             self.draw_menu()
@@ -843,7 +931,7 @@ class Game:
         self.present()
 
     def present(self):
-        """Scales the game field to the window, preserving the aspect ratio."""
+        """Pielāgo spēles lauku loga izmēram, saglabājot proporcijas."""
         win_w, win_h = self.window.get_size()
         scale = min(win_w / W, win_h / H)
         size = (max(1, int(W * scale)), max(1, int(H * scale)))
@@ -854,10 +942,13 @@ class Game:
         self.window.blit(scaled, self.view_offset)
         pygame.display.flip()
 
+    # Galvenais spēles cikls: atkārtojas 60 reizes sekundē
     def run(self):
         while True:
+            # dt = laiks kopš iepriekšējā kadra (sekundēs), ierobežots ar 0,05, lai spēle 'nelēktu'
             dt = min(self.clock.tick(FPS) / 1000, 0.05)
             self.anim_time += dt
+            # Apstrādā visus notikumus: loga aizvēršanu, taustiņus un peli
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.quit_game()
@@ -869,9 +960,11 @@ class Game:
                     self.handle_mouse_motion(event.pos)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self.handle_mouse_click(event.pos)
+            # Vispirms atjauno spēles loģiku, tad uzzīmē kadru
             self.update(dt)
             self.draw()
 
 
+# Spēle tiek palaista tikai tad, ja šis fails tiek palaists tieši
 if __name__ == "__main__":
     Game().run()
